@@ -209,7 +209,11 @@
     .day-header.sun { color: var(--sun); }
     .day-header.sat { color: var(--sat); }
 
-    .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; position: relative; z-index: 1; }
+    .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr) 28px; gap: 3px; position: relative; z-index: 1; }
+    .week-badge { display: flex; align-items: center; justify-content: center; font-size: 16px; }
+    .day-cell.hold-day .empty-day { background: #FFF3CD; }
+    .day-cell.hold-day .day-num { color: #E08000; }
+    .day-cell.out-of-range { opacity: 0.35; pointer-events: none; }
     .day-cell { aspect-ratio: 1; overflow: visible; position: relative; cursor: pointer; transition: transform 0.15s; }
     .day-cell:active { transform: scale(0.95); }
     .day-cell.empty { cursor: default; }
@@ -350,7 +354,10 @@
           <div class="day-header sat">토</div>
         </div>
         <div class="calendar-grid" id="calendarGrid"></div>
-        <div class="photo-count"><span id="themeIcon">📷</span> <span id="photoCount">0장의 추억</span></div>
+        <div class="photo-count" style="flex-direction:column; gap:4px;">
+          <span id="challengeTitle" style="font-weight:600; font-size:12px;"></span>
+          <span id="challengeRate" style="font-size:12px;"></span>
+        </div>
       </div>
       <div class="export-buttons">
         <button class="export-btn primary" id="saveBtn">💾 저장</button>
@@ -528,6 +535,9 @@
         id: id,
         name: name,
         created: Date.now(),
+        challengeField: '독서',
+        challengeStart: '2025-03-09',
+        challengeEnd: '2025-03-29',
         months: {}
       };
       currentCalendarId = id;
@@ -635,50 +645,67 @@
 
 
     function render() {
-      const data = getCurrentMonthData();
-      applySettings();
-      
-      $('monthTitle').textContent = `${currentYear}년 ${MONTHS[currentMonth]}`;
-      
-      const days = new Date(currentYear, currentMonth + 1, 0).getDate();
-      const first = new Date(currentYear, currentMonth, 1).getDay();
-      const photos = data.photos || {};
-      
+      const cal = calendars[currentCalendarId];
       let html = '';
+      let weekDone = 0, weekHold = 0;
+
       for (let i = 0; i < first; i++) html += '<div class="day-cell empty"></div>';
-      
+
       for (let d = 1; d <= days; d++) {
         const dow = (first + d - 1) % 7;
         const isSun = dow === 0, isSat = dow === 6;
-        
-        if (photos[d]) {
-          const photoItem = photos[d];
-          const photoSrc = typeof photoItem === 'string' ? photoItem : photoItem.img;
+        const date = new Date(currentYear, currentMonth, d);
+        const inRange = cal.challengeStart && cal.challengeEnd
+          && date >= new Date(cal.challengeStart)
+          && date <= new Date(cal.challengeEnd);
 
-          html += `<div class="day-cell" data-day="${d}">
+        const photoItem = photos[d];
+        const isDone = photoItem?.status === 'done' || (typeof photoItem === 'string');
+        const isHold = photoItem?.status === 'hold';
+
+        if (isDone) weekDone++;
+        if (isHold) weekHold++;
+
+        let cellClass = 'day-cell';
+        if (!inRange) cellClass += ' out-of-range';
+        if (isHold) cellClass += ' hold-day';
+
+        if (isDone) {
+          const photoSrc = typeof photoItem === 'string' ? photoItem : photoItem.img;
+          html += `<div class="${cellClass}" data-day="${d}">
             <div class="photo-wrap">
               <img class="photo" src="${photoSrc}" alt="${d}일">
               <span class="overlay">${d}</span>
             </div>
           </div>`;
+        } else if (isHold) {
+          html += `<div class="${cellClass}" data-day="${d}">
+            <div class="empty-day">
+              <span class="day-num ${isSun?'sun':''} ${isSat?'sat':''}">${d}</span>
+              <span class="icon">🟡</span>
+            </div>
+          </div>`;
         } else {
-          html += `<div class="day-cell" data-day="${d}">
+          html += `<div class="${cellClass}" data-day="${d}">
             <div class="empty-day">
               <span class="day-num ${isSun?'sun':''} ${isSat?'sat':''}">${d}</span>
               <span class="icon">${ICONS[data.theme] || '📷'}</span>
             </div>
           </div>`;
         }
+
+        // 주 마지막(토요일 or 월말)에 주간 뱃지 삽입
+        if (isSat || d === days) {
+          const weekOk = weekDone >= 3 || (weekDone + weekHold >= 3 && weekHold <= 2);
+          html += `<div class="week-badge">${weekOk ? '✅' : (weekDone + weekHold > 0 ? '⬜' : '')}</div>`;
+          // 남은 빈칸 채우기 (마지막 주 토요일 전에 끝난 경우)
+          if (d === days && !isSat) {
+            const remaining = 6 - dow;
+            for (let k = 0; k < remaining; k++) html += '<div class="day-cell empty"></div>';
+          }
+          weekDone = 0; weekHold = 0;
+        }
       }
-      
-      $('calendarGrid').innerHTML = html;
-      $('photoCount').textContent = `${Object.keys(photos).length}장의 추억`;
-      
-      document.querySelectorAll('#calendarGrid .day-cell[data-day]').forEach(cell => {
-        cell.onclick = () => handleDay(+cell.dataset.day);
-      });
-      
-      renderPreviews();
     }
 
     function renderPreviews() {
@@ -697,23 +724,44 @@
     function handleDay(day) {
       selectedDay = day;
       const data = getCurrentMonthData();
+
       if (data.photos && data.photos[day]) {
         const photoItem = data.photos[day];
-        const photoSrc = typeof photoItem === 'string' ? photoItem : photoItem.img;
-
-        $('modalImage').src = photoSrc;
-
-        let dateText = `${currentYear}년 ${currentMonth+1}월 ${day}일`;
-        if (typeof photoItem === 'object' && photoItem.time) {
-          const shotTime = new Date(photoItem.time);
-          const timeText = shotTime.toLocaleString('ko-KR');
-          dateText += ` · ${timeText}`;
+        if (photoItem.status === 'hold') {
+          if (confirm(`${day}일 HOLD를 취소하시겠습니까?`)) {
+            delete data.photos[day];
+            saveCurrentMonthData(data);
+            render();
+          }
+          return;
         }
-
+        const photoSrc = typeof photoItem === 'string' ? photoItem : photoItem.img;
+        $('modalImage').src = photoSrc;
+        let dateText = `${currentYear}년 ${currentMonth+1}월 ${day}일`;
+        if (photoItem.time) dateText += ` · ${new Date(photoItem.time).toLocaleString('ko-KR')}`;
         $('modalDate').textContent = dateText;
         $('photoModal').classList.add('show');
       } else {
-        $('fileInput').click();
+        const cal = calendars[currentCalendarId];
+        const date = new Date(currentYear, currentMonth, day);
+        const inRange = cal.challengeStart && cal.challengeEnd
+          && date >= new Date(cal.challengeStart)
+          && date <= new Date(cal.challengeEnd);
+
+        if (inRange) {
+          const choice = confirm(`${day}일\n\n✅ 확인 → 인증사진 추가\n❌ 취소 → HOLD 처리`);
+          if (choice) {
+            $('fileInput').click();
+          } else {
+            if (!data.photos) data.photos = {};
+            data.photos[day] = { status: 'hold', time: new Date().toISOString() };
+            saveCurrentMonthData(data);
+            render();
+            toast('HOLD 처리되었습니다 🟡');
+          }
+        } else {
+          $('fileInput').click();
+        }
       }
     }
 
@@ -807,7 +855,8 @@
             if (!data.photos) data.photos = {};
             data.photos[selectedDay] = {
               img: canvas.toDataURL('image/jpeg', 0.7),
-              time: new Date().toISOString()
+              time: new Date().toISOString(),
+              status: 'done'
             };
             saveCurrentMonthData(data);
             render();
